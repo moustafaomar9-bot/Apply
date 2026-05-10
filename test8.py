@@ -18,7 +18,7 @@
 #
 #  RUNTIME FILES  (persist across restarts — do NOT delete)
 #    apply_data/data.json      – all customer records + feedback
-#    apply_data/users.json     – user accounts & hashed passwords (ALWAYS saved here)
+#    apply_data/users.json     – user accounts & hashed passwords
 #    apply_data/last_df.xlsx   – last uploaded client sheet
 #
 #  REQUIREMENTS
@@ -111,20 +111,15 @@ MONTHS_AR = {
 #  LOAD RECORDS (supports uploaded JSON)
 # ══════════════════════════════════════════════════════════════════════
 def _load_records() -> list:
-    # First priority: use uploaded JSON file
     if st.session_state.use_uploaded_json and st.session_state.uploaded_json_data is not None:
         return st.session_state.uploaded_json_data
-    
-    # Second priority: load from local DATA_FILE
     if os.path.exists(DATA_FILE):
         with open(DATA_FILE, encoding="utf-8") as f:
             return json.load(f)
     return []
 
 def _save_records(recs: list):
-    # Don't save to file if we're using uploaded JSON
     if st.session_state.use_uploaded_json:
-        # Just update session, don't save to file
         st.session_state.uploaded_json_data = recs
     else:
         with open(DATA_FILE, "w", encoding="utf-8") as f:
@@ -157,7 +152,6 @@ def ds_badge(ds: str) -> str:
     return f'<span class="badge" style="background:{bg};color:{fg};border:1px solid {fg}30">{ds}</span>'
 
 def fix_mobile(x) -> str:
-    """Ensure mobile number is 11 digits with leading zero."""
     if x is None or str(x).strip() in ("", "None", "nan"):
         return ""
     try:
@@ -167,7 +161,7 @@ def fix_mobile(x) -> str:
         return str(x).strip()
 
 # ══════════════════════════════════════════════════════════════════════
-#  USERS PERSISTENCE (ALWAYS saves to file)
+#  USERS PERSISTENCE
 # ══════════════════════════════════════════════════════════════════════
 def _load_users() -> dict:
     if os.path.exists(USERS_FILE):
@@ -179,12 +173,10 @@ def _load_users() -> dict:
     return default
 
 def _save_users(u: dict):
-    # Users ALWAYS save to file regardless of mode
     with open(USERS_FILE, "w", encoding="utf-8") as f:
         json.dump(u, f, ensure_ascii=False, indent=2)
 
 def _migrate_feedback(records: list) -> int:
-    """Rename legacy feedback values in-place. Returns count changed."""
     _map = {"Refused": "not interested", "child": "not interested"}
     n = 0
     for r in records:
@@ -211,7 +203,6 @@ def _normalise_df(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 def _to_excel_bytes(records: list) -> bytes:
-    """Export to Excel keeping Mobile as text with leading zero."""
     from openpyxl.styles import numbers as xl_numbers
     df  = pd.DataFrame(records)
     buf = io.BytesIO()
@@ -232,7 +223,6 @@ def _to_excel_bytes(records: list) -> bytes:
     return buf.getvalue()
 
 def _save_df(df: pd.DataFrame):
-    """Save last uploaded df, keeping Mobile as text."""
     try:
         from openpyxl import load_workbook
         from openpyxl.styles import numbers as xl_numbers
@@ -382,7 +372,6 @@ hr { border-color: #e4eaf3 !important; margin: 18px 0 !important; }
 ::-webkit-scrollbar-track { background: #f1f5f9; }
 ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 4px; }
 
-/* ── layout ── */
 .ap-hero {
     background: linear-gradient(135deg, #ffffff 0%, #f0f5ff 100%);
     border: 1px solid #dbeafe; border-radius: 18px;
@@ -480,16 +469,12 @@ if not st.session_state.logged_in:
     st.markdown("</div>", unsafe_allow_html=True)
     st.stop()
 
-# auto-migrate legacy feedback values on every startup
 if os.path.exists(DATA_FILE):
     _mr = _load_records()
     _mn = _migrate_feedback(_mr)
     if _mn > 0:
         _save_records(_mr)
 
-# ══════════════════════════════════════════════════════════════════════
-#  SEED on first run
-# ══════════════════════════════════════════════════════════════════════
 if not os.path.exists(DATA_FILE) and os.path.exists(EXCEL_SEED):
     _seed = _normalise_df(pd.read_excel(EXCEL_SEED))
     _recs = _seed.to_dict(orient="records")
@@ -498,7 +483,7 @@ if not os.path.exists(DATA_FILE) and os.path.exists(EXCEL_SEED):
     _save_df(_seed)
 
 # ══════════════════════════════════════════════════════════════════════
-#  SIDEBAR (MODIFIED with JSON upload and export options)
+#  SIDEBAR
 # ══════════════════════════════════════════════════════════════════════
 with st.sidebar:
     st.markdown(f"""
@@ -518,18 +503,18 @@ with st.sidebar:
       </div>
     </div>""", unsafe_allow_html=True)
 
-    # NEW: JSON Upload Section with Export Options
+    # NEW: JSON Upload Section
     st.markdown("---")
     st.markdown("**📁 Load JSON Data**")
     
-        # Show current mode with warning if in temp mode
+    # Show current mode with warning if in temp mode
     if st.session_state.use_uploaded_json:
         st.warning("⚠️ وضع العرض المؤقت - التعديلات مش بتتحفظ تلقائياً")
         st.success(f"✅ جاري استخدام JSON المرفوع ({len(st.session_state.uploaded_json_data)} سجل)")
         
         col1, col2 = st.columns(2)
         with col1:
-            # Export as JSON button -需要用 download button
+            # Export as JSON button
             json_str = json.dumps(st.session_state.uploaded_json_data, ensure_ascii=False, indent=2)
             st.download_button(
                 "💾 Export as JSON",
@@ -603,6 +588,42 @@ with st.sidebar:
             except Exception as e:
                 st.error(f"Error reading JSON: {e}")
 
+    # NEW: Backup Section
+    st.markdown("---")
+    st.markdown("**💾 Backup & Export**")
+    
+    col_b1, col_b2 = st.columns(2)
+    with col_b1:
+        records_backup = _load_records()
+        if records_backup:
+            st.download_button(
+                "📊 Backup Excel",
+                data=_to_excel_bytes(records_backup),
+                file_name=f"backup_{datetime.now():%Y%m%d_%H%M}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True
+            )
+    
+    with col_b2:
+        if st.button("💾 Full Backup (Data+Users)", use_container_width=True):
+            data = _load_records()
+            users = _load_users()
+            full_backup = {
+                "data": data,
+                "users": users,
+                "backup_date": datetime.now().isoformat(),
+                "total_records": len(data),
+                "total_users": len(users)
+            }
+            json_str = json.dumps(full_backup, ensure_ascii=False, indent=2)
+            st.download_button(
+                "⬇️ Download Full Backup",
+                data=json_str,
+                file_name=f"full_backup_{datetime.now():%Y%m%d_%H%M}.json",
+                mime="application/json",
+                key="full_backup_btn"
+            )
+
     pages = (["Dashboard", "All Data", "Upload Data", "Users", "Monthly Report"]
              if st.session_state.role == "admin"
              else ["My Dashboard", "My Clients"])
@@ -667,7 +688,6 @@ def page_dashboard():
     records = _load_records()
     s       = _get_stats(records)
 
-    # Show warning if in temp mode
     if st.session_state.use_uploaded_json:
         st.info("ℹ️ أنت في وضع العرض المؤقت - البيانات من JSON المرفوع")
 
@@ -1146,6 +1166,7 @@ def page_monthly_report():
     if not records:
         st.info("No data yet."); return
 
+    # ── parse dates
     df = pd.DataFrame(records)
     df["_date"] = pd.to_datetime(df.get("Assign Data",""), errors="coerce")
     df["_year"]  = df["_date"].dt.year
@@ -1155,6 +1176,7 @@ def page_monthly_report():
     if valid.empty:
         st.warning("No valid dates found in Assign Data column."); return
 
+    # ── controls
     years  = sorted(valid["_year"].dropna().unique().tolist(), reverse=True)
     months = sorted(valid["_month"].dropna().unique().tolist())
 
@@ -1170,6 +1192,7 @@ def page_monthly_report():
                                     for r in records if r.get("Agent Code")})
         sel_agent = st.selectbox("Agent", agents)
 
+    # ── filter
     mask = (valid["_year"] == sel_year) & (valid["_month"] == sel_month)
     month_df = valid[mask]
     if sel_agent != "All":
@@ -1188,6 +1211,7 @@ def page_monthly_report():
       </div>
     </div>""", unsafe_allow_html=True)
 
+    # ── KPI metrics
     k1,k2,k3,k4,k5 = st.columns(5)
     k1.metric("Total",           s["total"])
     k2.metric("Done ✅",         s["done"],   f"{pct(s['done'],s['total'])}%")
@@ -1201,6 +1225,7 @@ def page_monthly_report():
     st.markdown('<div class="sec-title">Data Source Breakdown</div>', unsafe_allow_html=True)
     _render_ds_cards(month_recs)
 
+    # ── Agent comparison within month (only if All agents)
     if sel_agent == "All":
         st.markdown('<div class="sec-title">Agent Performance This Month</div>', unsafe_allow_html=True)
         agent_list = sorted({str(r.get("Agent Code","")).strip()
@@ -1216,6 +1241,7 @@ def page_monthly_report():
             st.dataframe(pd.DataFrame(perf).sort_values("Done", ascending=False).reset_index(drop=True),
                          use_container_width=True, hide_index=True, height=220)
 
+    # ── Client table
     st.markdown('<div class="sec-title">Client Details</div>', unsafe_allow_html=True)
     if month_recs:
         disp_cols = [c for c in ["Ser","Customer Name","Mobile","Feedback (Sales)",
@@ -1226,6 +1252,7 @@ def page_monthly_report():
     else:
         st.info("No records for this selection.")
 
+    # ── Export
     st.markdown('<div class="sec-title">Export</div>', unsafe_allow_html=True)
     c1, c2, _ = st.columns([1,1,2])
     with c1:
@@ -1441,6 +1468,7 @@ def _build_excel_dashboard(records: list) -> bytes:
     wb = Workbook()
     wb.remove(wb.active)
 
+    # ── palette (no # prefix for openpyxl) ──
     H_BLUE  = "1E40AF"
     H_LBLUE = "DBEAFE"
     H_WHITE = "FFFFFF"
@@ -1466,9 +1494,10 @@ def _build_excel_dashboard(records: list) -> bytes:
     s = _get_stats(records)
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
     total = s["total"] or 1
-    agents = sorted({str(r.get("Agent Code","")).strip() for r in records if r.get("Agent Code")})
 
-    # Sheet 1 - Overview
+    # ══════════════════════════════════════════════════
+    # SHEET 1 — OVERVIEW
+    # ══════════════════════════════════════════════════
     ws1 = wb.create_sheet("Overview")
     ws1.sheet_view.showGridLines = False
 
@@ -1514,7 +1543,9 @@ def _build_excel_dashboard(records: list) -> bytes:
         _s(ws1, fb_row, 3, cnt/total, bg=bg, fg=fg, fmt="0.0%")
         fb_row += 1
 
-    # Sheet 2 - Raw Data
+    # ══════════════════════════════════════════════════
+    # SHEET 2 — RAW DATA
+    # ══════════════════════════════════════════════════
     ws2 = wb.create_sheet("Raw Data")
     ws2.sheet_view.showGridLines = False
 
@@ -1564,7 +1595,6 @@ def _build_html_report(records: list, agent_label: str = None, title: str = None
 
     fb_cnt = Counter(str(r.get("Feedback (Sales)","")).strip() for r in records)
     fb_items = sorted(fb_cnt.items(), key=lambda x: x[1], reverse=True)
-    mx_fb = fb_items[0][1] if fb_items else 1
 
     fb_cards = ""
     for lb, v in fb_items:
