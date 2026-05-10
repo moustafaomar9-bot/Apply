@@ -18,7 +18,7 @@
 #
 #  RUNTIME FILES  (persist across restarts — do NOT delete)
 #    apply_data/data.json      – all customer records + feedback
-#    apply_data/users.json     – user accounts & hashed passwords
+#    apply_data/users.json     – user accounts & hashed passwords (ALWAYS saved here)
 #    apply_data/last_df.xlsx   – last uploaded client sheet
 #
 #  REQUIREMENTS
@@ -32,7 +32,7 @@ from datetime import datetime, date
 from collections import Counter
 
 # ══════════════════════════════════════════════════════════════════════
-#  SESSION STATE FOR JSON UPLOAD (NEW)
+#  SESSION STATE FOR JSON UPLOAD
 # ══════════════════════════════════════════════════════════════════════
 if "uploaded_json_data" not in st.session_state:
     st.session_state.uploaded_json_data = None
@@ -108,7 +108,7 @@ MONTHS_AR = {
 }
 
 # ══════════════════════════════════════════════════════════════════════
-#  MODIFIED: LOAD RECORDS (supports uploaded JSON)
+#  LOAD RECORDS (supports uploaded JSON)
 # ══════════════════════════════════════════════════════════════════════
 def _load_records() -> list:
     # First priority: use uploaded JSON file
@@ -124,8 +124,7 @@ def _load_records() -> list:
 def _save_records(recs: list):
     # Don't save to file if we're using uploaded JSON
     if st.session_state.use_uploaded_json:
-        st.warning("⚠️ You are in 'Uploaded JSON' mode. Changes are not saved to original file.")
-        # Update session data
+        # Just update session, don't save to file
         st.session_state.uploaded_json_data = recs
     else:
         with open(DATA_FILE, "w", encoding="utf-8") as f:
@@ -168,7 +167,7 @@ def fix_mobile(x) -> str:
         return str(x).strip()
 
 # ══════════════════════════════════════════════════════════════════════
-#  PERSISTENCE
+#  USERS PERSISTENCE (ALWAYS saves to file)
 # ══════════════════════════════════════════════════════════════════════
 def _load_users() -> dict:
     if os.path.exists(USERS_FILE):
@@ -180,6 +179,7 @@ def _load_users() -> dict:
     return default
 
 def _save_users(u: dict):
+    # Users ALWAYS save to file regardless of mode
     with open(USERS_FILE, "w", encoding="utf-8") as f:
         json.dump(u, f, ensure_ascii=False, indent=2)
 
@@ -218,7 +218,6 @@ def _to_excel_bytes(records: list) -> bytes:
     with pd.ExcelWriter(buf, engine="openpyxl") as w:
         df.to_excel(w, index=False, sheet_name="Apply")
         ws = w.sheets["Apply"]
-        # find Mobile column index (1-based in openpyxl)
         headers = [ws.cell(1, c).value for c in range(1, ws.max_column+1)]
         if "Mobile" in headers:
             col_idx = headers.index("Mobile") + 1
@@ -226,11 +225,10 @@ def _to_excel_bytes(records: list) -> bytes:
                 cell = ws.cell(row, col_idx)
                 val  = str(cell.value) if cell.value is not None else ""
                 if val and val not in ("None","nan",""):
-                    # pad to 11 digits
                     try: val = str(int(float(val))).zfill(11)
                     except Exception: pass
                     cell.value          = val
-                    cell.number_format  = "@"   # force text format in Excel
+                    cell.number_format  = "@"
     return buf.getvalue()
 
 def _save_df(df: pd.DataFrame):
@@ -500,7 +498,7 @@ if not os.path.exists(DATA_FILE) and os.path.exists(EXCEL_SEED):
     _save_df(_seed)
 
 # ══════════════════════════════════════════════════════════════════════
-#  SIDEBAR (MODIFIED with JSON upload)
+#  SIDEBAR (MODIFIED with JSON upload and export options)
 # ══════════════════════════════════════════════════════════════════════
 with st.sidebar:
     st.markdown(f"""
@@ -520,39 +518,90 @@ with st.sidebar:
       </div>
     </div>""", unsafe_allow_html=True)
 
-    # NEW: JSON Upload Section
+    # NEW: JSON Upload Section with Export Options
     st.markdown("---")
     st.markdown("**📁 Load JSON Data**")
     
-    # Show current mode
+        # Show current mode with warning if in temp mode
     if st.session_state.use_uploaded_json:
-        st.success("✅ Using uploaded JSON")
-        if st.button("🔄 Switch to Local Data", use_container_width=True):
+        st.warning("⚠️ وضع العرض المؤقت - التعديلات مش بتتحفظ تلقائياً")
+        st.success(f"✅ جاري استخدام JSON المرفوع ({len(st.session_state.uploaded_json_data)} سجل)")
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            # Export as JSON button -需要用 download button
+            json_str = json.dumps(st.session_state.uploaded_json_data, ensure_ascii=False, indent=2)
+            st.download_button(
+                "💾 Export as JSON",
+                data=json_str,
+                file_name=f"data_export_{datetime.now():%Y%m%d_%H%M}.json",
+                mime="application/json",
+                key="json_download_temp"
+            )
+        
+        with col2:
+            # Merge to Local button
+            if st.button("🔗 Merge to Local", use_container_width=True):
+                local_data = []
+                if os.path.exists(DATA_FILE):
+                    with open(DATA_FILE, encoding="utf-8") as f:
+                        local_data = json.load(f)
+                
+                # Merge without duplicates (by Mobile)
+                existing_mobiles = {str(r.get("Mobile","")).strip().lstrip("0") for r in local_data}
+                new_records = []
+                for r in st.session_state.uploaded_json_data:
+                    mob_key = str(r.get("Mobile","")).strip().lstrip("0")
+                    if mob_key and mob_key not in existing_mobiles:
+                        new_records.append(r)
+                        existing_mobiles.add(mob_key)
+                
+                merged = local_data + new_records
+                with open(DATA_FILE, "w", encoding="utf-8") as f:
+                    json.dump(merged, f, ensure_ascii=False, indent=2)
+                
+                # Auto-create agents from merged data
+                _auto_create_agents(merged)
+                
+                st.session_state.use_uploaded_json = False
+                st.session_state.uploaded_json_data = None
+                st.success(f"✅ تم دمج {len(new_records)} سجل جديد وحفظهم محلياً!")
+                st.rerun()
+        
+        # Switch back to local mode
+        if st.button("🔄 Switch to Local Data Only", use_container_width=True):
             st.session_state.use_uploaded_json = False
             st.session_state.uploaded_json_data = None
             st.rerun()
+            
     else:
         st.info("📄 Using local data from apply_data/")
-    
-    uploaded_json = st.file_uploader(
-        "Upload your JSON file",
-        type=["json"],
-        key="json_uploader",
-        label_visibility="collapsed"
-    )
-    
-    if uploaded_json is not None:
-        try:
-            data = json.load(uploaded_json)
-            if isinstance(data, list):
-                st.session_state.uploaded_json_data = data
-                st.session_state.use_uploaded_json = True
-                st.success(f"✅ Loaded {len(data)} records from JSON!")
-                st.rerun()
-            else:
-                st.error("JSON must contain an array of records")
-        except Exception as e:
-            st.error(f"Error reading JSON: {e}")
+        
+        # Show local data count
+        if os.path.exists(DATA_FILE):
+            with open(DATA_FILE, encoding="utf-8") as f:
+                local_count = len(json.load(f))
+            st.caption(f"Local records: {local_count}")
+        
+        uploaded_json = st.file_uploader(
+            "Upload JSON file to view temporarily",
+            type=["json"],
+            key="json_uploader",
+            label_visibility="collapsed"
+        )
+        
+        if uploaded_json is not None:
+            try:
+                data = json.load(uploaded_json)
+                if isinstance(data, list):
+                    st.session_state.uploaded_json_data = data
+                    st.session_state.use_uploaded_json = True
+                    st.success(f"✅ Loaded {len(data)} records from JSON! (Temporary mode)")
+                    st.rerun()
+                else:
+                    st.error("JSON must contain an array of records")
+            except Exception as e:
+                st.error(f"Error reading JSON: {e}")
 
     pages = (["Dashboard", "All Data", "Upload Data", "Users", "Monthly Report"]
              if st.session_state.role == "admin"
@@ -618,6 +667,10 @@ def page_dashboard():
     records = _load_records()
     s       = _get_stats(records)
 
+    # Show warning if in temp mode
+    if st.session_state.use_uploaded_json:
+        st.info("ℹ️ أنت في وضع العرض المؤقت - البيانات من JSON المرفوع")
+
     st.markdown(f"""
     <div class="ap-hero">
       <div class="ap-hero-title">🛡️ Admin Dashboard</div>
@@ -672,7 +725,6 @@ def page_dashboard():
         mine = [r for r in records if str(r.get("Agent Code","")).strip() == ac]
         ag_s = _get_stats(mine)
         row  = {"Agent": ac, "Total": ag_s["total"]}
-        # one column per feedback option
         for fb in FEEDBACK_OPTIONS:
             row[fb] = ag_s["fb"].get(fb, 0)
         row["Conv %"] = f"{pct(ag_s['done'], ag_s['total'])}%"
@@ -706,6 +758,10 @@ def _dedup_records(records):
 
 def page_all_data():
     records = _load_records()
+    
+    if st.session_state.use_uploaded_json:
+        st.info("ℹ️ عرض بيانات من JSON مرفوع مؤقتاً")
+    
     st.markdown('<div class="sec-title">All Client Data</div>', unsafe_allow_html=True)
     if not records: st.info("No records yet."); return
 
@@ -917,6 +973,9 @@ def page_all_data():
 #  PAGE: UPLOAD DATA
 # ══════════════════════════════════════════════════════════════════════
 def page_upload():
+    if st.session_state.use_uploaded_json:
+        st.warning("⚠️ أنت في وضع عرض JSON المؤقت. استيراد بيانات جديدة سيتم حفظها محلياً.")
+    
     st.markdown('<div class="sec-title">Upload Data</div>', unsafe_allow_html=True)
     tab1, tab2, tab3 = st.tabs(["📋  Client Sheet", "💬  Feedback Sheet", "⬇️  Download"])
 
@@ -944,7 +1003,6 @@ def page_upload():
                     if overwrite:
                         final = new_recs
                     else:
-                        # deduplicate: skip rows whose Mobile already exists
                         existing_mobs = {str(r.get("Mobile","")).strip().lstrip("0")
                                          for r in recs if r.get("Mobile")}
                         mx = max((r.get("Ser",0) for r in recs), default=0)
@@ -952,7 +1010,7 @@ def page_upload():
                         for r in new_recs:
                             mob_key = str(r.get("Mobile","")).strip().lstrip("0")
                             if mob_key and mob_key in existing_mobs:
-                                continue   # skip duplicate
+                                continue
                             mx += 1
                             if not r.get("Ser"): r["Ser"] = mx
                             added_new.append(r)
@@ -1022,6 +1080,12 @@ def page_upload():
                 data=_to_excel_bytes(recs),
                 file_name=f"apply_full_{datetime.now():%Y%m%d_%H%M}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+            if st.session_state.use_uploaded_json:
+                json_str = json.dumps(recs, ensure_ascii=False, indent=2)
+                st.download_button("💾 Download as JSON",
+                    data=json_str,
+                    file_name=f"apply_data_{datetime.now():%Y%m%d_%H%M}.json",
+                    mime="application/json")
         else: st.info("No data yet.")
 
 # ══════════════════════════════════════════════════════════════════════
@@ -1073,12 +1137,15 @@ def page_users():
 # ══════════════════════════════════════════════════════════════════════
 def page_monthly_report():
     records = _load_records()
+    
+    if st.session_state.use_uploaded_json:
+        st.info("ℹ️ عرض بيانات من JSON مرفوع مؤقتاً")
+    
     st.markdown('<div class="sec-title">📅 Monthly Report</div>', unsafe_allow_html=True)
 
     if not records:
         st.info("No data yet."); return
 
-    # ── parse dates
     df = pd.DataFrame(records)
     df["_date"] = pd.to_datetime(df.get("Assign Data",""), errors="coerce")
     df["_year"]  = df["_date"].dt.year
@@ -1088,7 +1155,6 @@ def page_monthly_report():
     if valid.empty:
         st.warning("No valid dates found in Assign Data column."); return
 
-    # ── controls
     years  = sorted(valid["_year"].dropna().unique().tolist(), reverse=True)
     months = sorted(valid["_month"].dropna().unique().tolist())
 
@@ -1104,7 +1170,6 @@ def page_monthly_report():
                                     for r in records if r.get("Agent Code")})
         sel_agent = st.selectbox("Agent", agents)
 
-    # ── filter
     mask = (valid["_year"] == sel_year) & (valid["_month"] == sel_month)
     month_df = valid[mask]
     if sel_agent != "All":
@@ -1123,7 +1188,6 @@ def page_monthly_report():
       </div>
     </div>""", unsafe_allow_html=True)
 
-        # ── KPI metrics
     k1,k2,k3,k4,k5 = st.columns(5)
     k1.metric("Total",           s["total"])
     k2.metric("Done ✅",         s["done"],   f"{pct(s['done'],s['total'])}%")
@@ -1137,7 +1201,6 @@ def page_monthly_report():
     st.markdown('<div class="sec-title">Data Source Breakdown</div>', unsafe_allow_html=True)
     _render_ds_cards(month_recs)
 
-    # ── Agent comparison within month (only if All agents)
     if sel_agent == "All":
         st.markdown('<div class="sec-title">Agent Performance This Month</div>', unsafe_allow_html=True)
         agent_list = sorted({str(r.get("Agent Code","")).strip()
@@ -1153,7 +1216,6 @@ def page_monthly_report():
             st.dataframe(pd.DataFrame(perf).sort_values("Done", ascending=False).reset_index(drop=True),
                          use_container_width=True, hide_index=True, height=220)
 
-    # ── Client table
     st.markdown('<div class="sec-title">Client Details</div>', unsafe_allow_html=True)
     if month_recs:
         disp_cols = [c for c in ["Ser","Customer Name","Mobile","Feedback (Sales)",
@@ -1164,7 +1226,6 @@ def page_monthly_report():
     else:
         st.info("No records for this selection.")
 
-    # ── Export
     st.markdown('<div class="sec-title">Export</div>', unsafe_allow_html=True)
     c1, c2, _ = st.columns([1,1,2])
     with c1:
@@ -1369,7 +1430,6 @@ def page_my_clients():
             file_name=f"agent_{agent}_{datetime.now():%Y%m%d}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
-
 # ══════════════════════════════════════════════════════════════════════
 #  EXCEL DASHBOARD
 # ══════════════════════════════════════════════════════════════════════
@@ -1381,182 +1441,82 @@ def _build_excel_dashboard(records: list) -> bytes:
     wb = Workbook()
     wb.remove(wb.active)
 
-    # ── palette (no # prefix for openpyxl) ──
     H_BLUE  = "1E40AF"
     H_LBLUE = "DBEAFE"
-    H_TOTAL = "EFF6FF"
     H_WHITE = "FFFFFF"
-    H_GREY  = "F8FAFC"
-    T_WHITE = "FFFFFF"
     T_DARK  = "1E2D45"
-    T_GREY  = "64748B"
 
-    THIN  = Side(style="thin",   color="D0DAE8")
+    THIN  = Side(style="thin", color="D0DAE8")
     bdr   = Border(left=THIN, right=THIN, top=THIN, bottom=THIN)
 
-    def _s(ws, r, c, val, bg=H_WHITE, fg=T_DARK, bold=False, sz=10,
-           halign="center", fmt=None, wrap=False):
-        """Write a single (non-merged) cell safely."""
+    def _s(ws, r, c, val, bg=H_WHITE, fg=T_DARK, bold=False, sz=10, halign="center", fmt=None):
         cell = ws.cell(row=r, column=c)
-        cell.value     = val
-        cell.font      = Font(name="Calibri", bold=bold, size=sz, color=fg)
-        cell.fill      = PatternFill("solid", fgColor=bg)
-        cell.alignment = Alignment(horizontal=halign, vertical="center",
-                                    wrap_text=wrap)
-        cell.border    = bdr
+        cell.value = val
+        cell.font = Font(name="Calibri", bold=bold, size=sz, color=fg)
+        cell.fill = PatternFill("solid", fgColor=bg)
+        cell.alignment = Alignment(horizontal=halign, vertical="center")
+        cell.border = bdr
         if fmt:
             cell.number_format = fmt
         return cell
 
-    def _hdr(ws, r, c, val, bg=H_BLUE, fg=T_WHITE, sz=10, wrap=False):
-        return _s(ws, r, c, val, bg=bg, fg=fg, bold=True, sz=sz, wrap=wrap)
+    def _hdr(ws, r, c, val, bg=H_BLUE, fg="FFFFFF", sz=10):
+        return _s(ws, r, c, val, bg=bg, fg=fg, bold=True, sz=sz)
 
-    s      = _get_stats(records)
-    now    = datetime.now().strftime("%Y-%m-%d %H:%M")
-    total  = s["total"] or 1
-    agents = sorted({str(r.get("Agent Code","")).strip()
-                     for r in records if r.get("Agent Code")})
+    s = _get_stats(records)
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    total = s["total"] or 1
+    agents = sorted({str(r.get("Agent Code","")).strip() for r in records if r.get("Agent Code")})
 
-    # ══════════════════════════════════════════════════
-    # SHEET 1 — OVERVIEW
-    # ══════════════════════════════════════════════════
+    # Sheet 1 - Overview
     ws1 = wb.create_sheet("Overview")
     ws1.sheet_view.showGridLines = False
 
-    # column widths
     for ci, w in [(1,22),(2,8),(3,8),(4,8)]:
         ws1.column_dimensions[get_column_letter(ci)].width = w
 
-    # ── Row 1: title (plain, no merge)
     ws1.row_dimensions[1].height = 34
     tc = ws1.cell(1,1, "APPLY — Sales Dashboard")
-    tc.font      = Font(name="Calibri", bold=True, size=16, color=H_BLUE)
-    tc.alignment = Alignment(horizontal="left", vertical="center")
+    tc.font = Font(name="Calibri", bold=True, size=16, color=H_BLUE)
     ws1.cell(1,4, now).font = Font(name="Calibri", size=9, color="94A3B8")
-
-    # ── Row 2: blank spacer
     ws1.row_dimensions[2].height = 8
 
-    # ── Rows 3-4: KPI block
     kpis = [
-        ("Total",   s["total"],                  H_LBLUE, T_DARK,  None),
-        ("Done",    s["done"],                   "DCFCE7","15803D",None),
-        ("Done %",  pct(s["done"],s["total"])/100,"DCFCE7","15803D","0%"),
-        ("Recall",  s["recall"],                 "FEF3C7","B45309",None),
-        ("Closed",  s["closed"],                 "FEE2E2","B91C1C",None),
-        ("Not Int.",s["ni"],                     "F1F5F9","475569",None),
+        ("Total", s["total"], H_LBLUE, T_DARK, None),
+        ("Done", s["done"], "DCFCE7", "15803D", None),
+        ("Done %", pct(s["done"], s["total"])/100, "DCFCE7", "15803D", "0%"),
+        ("Recall", s["recall"], "FEF3C7", "B45309", None),
+        ("Closed", s["closed"], "FEE2E2", "B91C1C", None),
+        ("Not Int.", s["ni"], "F1F5F9", "475569", None),
     ]
-    ws1.row_dimensions[3].height = 22
-    ws1.row_dimensions[4].height = 30
-    # put KPIs side-by-side in col A (label) + col B-G (values horizontally)
-    # Actually put each KPI in its own column pair would need more cols — 
-    # let's just use one column layout: col A = label, col B = value
+    
     for ki, (lbl, val, bg, fg, fmt) in enumerate(kpis):
         row_l = 3 + ki*2
         row_v = 4 + ki*2
         ws1.row_dimensions[row_l].height = 16
         ws1.row_dimensions[row_v].height = 26
         _hdr(ws1, row_l, 1, lbl, bg=bg, fg=fg, sz=9)
-        c = _s(ws1, row_v, 1, val if not fmt else val,
-               bg=bg, fg=fg, bold=True, sz=16, fmt=fmt)
+        _s(ws1, row_v, 1, val if not fmt else val, bg=bg, fg=fg, bold=True, sz=16, fmt=fmt)
 
-    # ── Feedback section (starts after KPIs)
-    fb_row = 3 + len(kpis)*2 + 1
-    ws1.row_dimensions[fb_row].height = 8   # spacer
-    fb_row += 1
-
-    _hdr(ws1, fb_row,   1, "Feedback",  sz=10)
-    _hdr(ws1, fb_row,   2, "Count",     sz=10)
-    _hdr(ws1, fb_row,   3, "%",         sz=10)
+    fb_row = 3 + len(kpis)*2 + 3
+    _hdr(ws1, fb_row, 1, "Feedback", sz=10)
+    _hdr(ws1, fb_row, 2, "Count", sz=10)
+    _hdr(ws1, fb_row, 3, "%", sz=10)
     fb_row += 1
 
     for fb in FEEDBACK_OPTIONS:
         cnt = s["fb"].get(fb, 0)
-        bg  = FB_BG.get(fb,  "#F8FAFC").replace("#","")
-        fg  = FB_COLORS.get(fb, "#1E2D45").replace("#","")
+        bg = FB_BG.get(fb, "#F8FAFC").replace("#", "")
+        fg = FB_COLORS.get(fb, "#1E2D45").replace("#", "")
         ws1.row_dimensions[fb_row].height = 18
-        _s(ws1, fb_row, 1, fb,       bg=bg, fg=fg, halign="left")
-        _s(ws1, fb_row, 2, cnt,      bg=bg, fg=fg, bold=True)
-        _s(ws1, fb_row, 3, cnt/total,bg=bg, fg=fg, fmt="0.0%")
+        _s(ws1, fb_row, 1, fb, bg=bg, fg=fg, halign="left")
+        _s(ws1, fb_row, 2, cnt, bg=bg, fg=fg, bold=True)
+        _s(ws1, fb_row, 3, cnt/total, bg=bg, fg=fg, fmt="0.0%")
         fb_row += 1
 
-    # ── Data Source section
-    fb_row += 1  # spacer
-    _hdr(ws1, fb_row, 1, "Data Source", sz=10)
-    _hdr(ws1, fb_row, 2, "Count",       sz=10)
-    _hdr(ws1, fb_row, 3, "%",           sz=10)
-    fb_row += 1
-
-    for ds in DS_OPTIONS:
-        cnt = s["ds"].get(ds, 0)
-        bg  = DS_BG.get(ds,  "#F8FAFC").replace("#","")
-        fg  = DS_COLORS.get(ds, "#1E2D45").replace("#","")
-        ws1.row_dimensions[fb_row].height = 18
-        _s(ws1, fb_row, 1, ds,       bg=bg, fg=fg, halign="left")
-        _s(ws1, fb_row, 2, cnt,      bg=bg, fg=fg, bold=True)
-        _s(ws1, fb_row, 3, cnt/total,bg=bg, fg=fg, fmt="0.0%")
-        fb_row += 1
-
-    # ══════════════════════════════════════════════════
-    # SHEET 2 — AGENT PERFORMANCE
-    # ══════════════════════════════════════════════════
-    ws2 = wb.create_sheet("Agent Performance")
+    # Sheet 2 - Raw Data
+    ws2 = wb.create_sheet("Raw Data")
     ws2.sheet_view.showGridLines = False
-
-    cols = ["Agent", "Total"] + FEEDBACK_OPTIONS + ["Conv %"]
-    for ci, col_name in enumerate(cols, start=1):
-        ws2.column_dimensions[get_column_letter(ci)].width = max(14, len(col_name)+3)
-        bg = H_BLUE
-        fg = T_WHITE
-        if col_name in FB_BG:
-            bg = FB_BG[col_name].replace("#","")
-            fg = FB_COLORS.get(col_name, T_DARK).replace("#","")
-        _hdr(ws2, 1, ci, col_name, bg=bg, fg=fg, sz=10, wrap=True)
-    ws2.row_dimensions[1].height = 42
-
-    ag_rows = []
-    for ac in agents:
-        mine  = [r for r in records if str(r.get("Agent Code","")).strip() == ac]
-        ag_s  = _get_stats(mine)
-        ag_rows.append((ac, ag_s))
-    ag_rows.sort(key=lambda x: x[1]["done"], reverse=True)
-
-    for ri, (ac, ag_s) in enumerate(ag_rows, start=2):
-        done_pct = ag_s["done"] / (ag_s["total"] or 1)
-        ws2.row_dimensions[ri].height = 20
-        ci = 1
-        _s(ws2, ri, ci, ac, bold=True, halign="left"); ci += 1
-        _s(ws2, ri, ci, ag_s["total"], bg=H_LBLUE, fg=T_DARK, bold=True); ci += 1
-        for fb in FEEDBACK_OPTIONS:
-            cnt = ag_s["fb"].get(fb, 0)
-            bg  = FB_BG.get(fb,  "#FFFFFF").replace("#","")
-            fg  = FB_COLORS.get(fb, T_DARK).replace("#","")
-            _s(ws2, ri, ci, cnt if cnt > 0 else "",
-               bg=bg if cnt > 0 else H_WHITE, fg=fg, bold=(cnt > 0))
-            ci += 1
-        _s(ws2, ri, ci, done_pct,
-           bg="DCFCE7" if done_pct > 0 else H_WHITE,
-           fg="15803D", bold=True, fmt="0%")
-
-    # Totals row
-    tr = len(ag_rows) + 2
-    ws2.row_dimensions[tr].height = 24
-    ci = 1
-    _s(ws2, tr, ci, "TOTAL", bg=H_LBLUE, fg=T_DARK, bold=True, halign="left"); ci += 1
-    _s(ws2, tr, ci, s["total"], bg=H_LBLUE, fg=T_DARK, bold=True, sz=11); ci += 1
-    for fb in FEEDBACK_OPTIONS:
-        cnt = s["fb"].get(fb, 0)
-        bg  = FB_BG.get(fb, "#EFF6FF").replace("#","")
-        fg  = FB_COLORS.get(fb, T_DARK).replace("#","")
-        _s(ws2, tr, ci, cnt, bg=bg, fg=fg, bold=True, sz=11); ci += 1
-    _s(ws2, tr, ci, pct(s["done"], s["total"])/100,
-       bg="DCFCE7", fg="15803D", bold=True, sz=11, fmt="0%")
-
-    # ══════════════════════════════════════════════════
-    # SHEET 3 — RAW DATA
-    # ══════════════════════════════════════════════════
-    ws3 = wb.create_sheet("Raw Data")
-    ws3.sheet_view.showGridLines = False
 
     if records:
         df = pd.DataFrame(records).copy()
@@ -1566,28 +1526,28 @@ def _build_excel_dashboard(records: list) -> bytes:
                 if str(x).strip() not in ("","None","nan") else "")
         col_names = list(df.columns)
         for ci, cn in enumerate(col_names, start=1):
-            ws3.column_dimensions[get_column_letter(ci)].width = max(14, len(str(cn))+4)
-            _hdr(ws3, 1, ci, cn, sz=10)
-        ws3.row_dimensions[1].height = 22
+            ws2.column_dimensions[get_column_letter(ci)].width = max(14, len(str(cn))+4)
+            _hdr(ws2, 1, ci, cn, sz=10)
+        ws2.row_dimensions[1].height = 22
         for ri, row in df.iterrows():
-            ws3.row_dimensions[ri+2].height = 18
+            ws2.row_dimensions[ri+2].height = 18
             for ci, cn in enumerate(col_names, start=1):
                 v = row[cn]
                 if cn == "Feedback (Sales)":
                     fb_val = str(v).strip()
-                    bg = FB_BG.get(fb_val, "#FFFFFF").replace("#","")
-                    fg = FB_COLORS.get(fb_val, T_DARK).replace("#","")
-                    _s(ws3, ri+2, ci, v, bg=bg, fg=fg)
+                    bg = FB_BG.get(fb_val, "#FFFFFF").replace("#", "")
+                    fg = FB_COLORS.get(fb_val, T_DARK).replace("#", "")
+                    _s(ws2, ri+2, ci, v, bg=bg, fg=fg)
                 elif cn == "Mobile":
-                    c2 = ws3.cell(row=ri+2, column=ci)
-                    c2.value          = str(v) if v else ""
-                    c2.font           = Font(name="Calibri", size=10)
-                    c2.fill           = PatternFill("solid", fgColor=H_WHITE)
-                    c2.alignment      = Alignment(horizontal="center", vertical="center")
-                    c2.border         = bdr
-                    c2.number_format  = "@"
+                    c2 = ws2.cell(row=ri+2, column=ci)
+                    c2.value = str(v) if v else ""
+                    c2.font = Font(name="Calibri", size=10)
+                    c2.fill = PatternFill("solid", fgColor=H_WHITE)
+                    c2.alignment = Alignment(horizontal="center", vertical="center")
+                    c2.border = bdr
+                    c2.number_format = "@"
                 else:
-                    _s(ws3, ri+2, ci, v, halign="left")
+                    _s(ws2, ri+2, ci, v, halign="left")
 
     buf = io.BytesIO()
     wb.save(buf)
@@ -1597,157 +1557,67 @@ def _build_excel_dashboard(records: list) -> bytes:
 #  HTML REPORT
 # ══════════════════════════════════════════════════════════════════════
 def _build_html_report(records: list, agent_label: str = None, title: str = None) -> str:
-    s     = _get_stats(records)
+    s = _get_stats(records)
     total = s["total"]
-    conv  = pct(s["done"], total)
-    now   = datetime.now().strftime("%Y-%m-%d %H:%M")
+    conv = pct(s["done"], total)
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
 
-    fb_cnt   = Counter(str(r.get("Feedback (Sales)","")).strip() for r in records)
+    fb_cnt = Counter(str(r.get("Feedback (Sales)","")).strip() for r in records)
     fb_items = sorted(fb_cnt.items(), key=lambda x: x[1], reverse=True)
-    mx_fb    = fb_items[0][1] if fb_items else 1
+    mx_fb = fb_items[0][1] if fb_items else 1
 
     fb_cards = ""
     for lb, v in fb_items:
         if not lb or lb in ("None","nan",""): continue
-        fg = FB_COLORS.get(lb, "#475569"); bg = FB_BG.get(lb, "#f8fafc")
-        fb_cards += (
-            f'<div style="background:{bg};border:1px solid {fg}25;border-left:4px solid {fg};'
-            f'border-radius:12px;padding:20px 14px;text-align:center">'
-            f'<div style="font-family:Syne,sans-serif;font-size:2.6rem;font-weight:900;color:{fg};line-height:1">{v}</div>'
-            f'<div style="font-size:13px;color:{fg};margin-top:8px;font-weight:700;text-transform:uppercase;letter-spacing:.5px">{lb}</div>'
-            f'<div style="font-size:14px;color:#64748b;margin-top:4px;font-weight:600">{pct(v,total)}%</div>'
-            f'</div>'
-        )
-
-    fb_bars = ""
-    for lb, v in fb_items:
-        if not lb or lb in ("None","nan",""): continue
         fg = FB_COLORS.get(lb, "#475569")
-        fb_bars += (
-            f'<div style="display:flex;align-items:center;gap:14px;margin:12px 0">'
-            f'<span style="width:185px;font-size:15px;color:#334155;flex-shrink:0;font-weight:600">{lb}</span>'
-            f'<div style="flex:1;background:#f1f5f9;border-radius:6px;height:24px;overflow:hidden">'
-            f'<div style="background:{fg};width:{int(v/mx_fb*100)}%;height:24px;border-radius:6px"></div></div>'
-            f'<span style="font-size:17px;font-weight:900;color:{fg};min-width:32px">{v}</span>'
-            f'<span style="font-size:14px;color:#94a3b8;min-width:42px">{pct(v,total)}%</span>'
-            f'</div>'
-        )
+        bg = FB_BG.get(lb, "#f8fafc")
+        fb_cards += f'<div style="background:{bg};border:1px solid {fg}25;border-radius:12px;padding:15px;text-align:center"><div style="font-size:2rem;font-weight:900;color:{fg}">{v}</div><div style="font-size:12px;color:{fg}">{lb}</div><div style="font-size:11px;color:#64748b">{pct(v,total)}%</div></div>'
 
-    ds_cnt   = Counter(str(r.get("Data Source Feedback","")).strip() for r in records)
+    ds_cnt = Counter(str(r.get("Data Source Feedback","")).strip() for r in records)
     ds_items = sorted(ds_cnt.items(), key=lambda x: x[1], reverse=True)
     ds_cards = ""
     for ds, cnt in ds_items:
         if not ds or ds in ("None","nan",""): continue
-        fg = DS_COLORS.get(ds, "#475569"); bg = DS_BG.get(ds, "#f8fafc")
-        ds_cards += (
-            f'<div style="background:{bg};border:1px solid {fg}25;border-left:4px solid {fg};'
-            f'border-radius:12px;padding:20px 14px;text-align:center">'
-            f'<div style="font-family:Syne,sans-serif;font-size:2.6rem;font-weight:900;color:{fg};line-height:1">{cnt}</div>'
-            f'<div style="font-size:13px;color:{fg};margin-top:8px;font-weight:700;text-transform:uppercase;letter-spacing:.5px">{ds}</div>'
-            f'<div style="font-size:14px;color:#64748b;margin-top:4px;font-weight:600">{pct(cnt,total)}%</div>'
-            f'</div>'
-        )
+        fg = DS_COLORS.get(ds, "#475569")
+        bg = DS_BG.get(ds, "#f8fafc")
+        ds_cards += f'<div style="background:{bg};border:1px solid {fg}25;border-radius:12px;padding:15px;text-align:center"><div style="font-size:2rem;font-weight:900;color:{fg}">{cnt}</div><div style="font-size:12px;color:{fg}">{ds}</div><div style="font-size:11px;color:#64748b">{pct(cnt,total)}%</div></div>'
 
-    agent_section = ""
-    if not agent_label:
-        agents  = sorted({str(r.get("Agent Code","")).strip() for r in records if r.get("Agent Code")})
-        ag_data = []
-        for ac in agents:
-            mine  = [r for r in records if str(r.get("Agent Code","")).strip() == ac]
-            ag_s  = _get_stats(mine)
-            ag_data.append((ac, ag_s))
-        ag_data.sort(key=lambda x: x[1]["done"], reverse=True)
-        rows = ""
-        for rank, (ac, ag_s) in enumerate(ag_data):
-            medal    = ["🥇","🥈","🥉"][rank] if rank < 3 else ""
-            done_pct = pct(ag_s["done"], ag_s["total"])
-            rows += (
-                f"<tr>"
-                f"<td style='font-weight:700;color:#1e2d45;font-size:15px'>{medal} {ac}</td>"
-                f"<td style='color:#334155;font-size:15px'>{ag_s['total']}</td>"
-                f"<td style='color:#15803d;font-weight:800;font-size:18px'>{ag_s['done']}</td>"
-                f"<td style='color:#b45309;font-size:15px'>{ag_s['recall']}</td>"
-                f"<td style='color:#b91c1c;font-size:15px'>{ag_s['closed']}</td>"
-                f"<td><div style='display:flex;align-items:center;gap:8px'>"
-                f"<div style='flex:1;background:#f1f5f9;border-radius:4px;height:12px;overflow:hidden'>"
-                f"<div style='background:#15803d;width:{done_pct}%;height:12px;border-radius:4px'></div></div>"
-                f"<span style='color:#15803d;font-weight:800;font-size:16px;min-width:42px'>{done_pct}%</span>"
-                f"</div></td>"
-                f"</tr>"
-            )
-        agent_section = f"""
-        <div class="section">
-          <h2>Agent Performance — Sorted by Done ↓</h2>
-          <table>
-            <thead><tr><th>Agent</th><th>Total</th><th>Done</th><th>Recall</th><th>Closed</th><th>Conv %</th></tr></thead>
-            <tbody>
-            {rows}
-            </tbody>
-          </table>
-        </div>"""
-
-    if title:
-        subtitle = title
-    elif agent_label:
-        subtitle = f"Agent {agent_label}"
-    else:
-        subtitle = "Full Team Report"
+    subtitle = title or (f"Agent {agent_label}" if agent_label else "Full Team Report")
 
     return f"""<!DOCTYPE html>
-<html lang="en">
+<html>
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Apply — {subtitle}</title>
+<title>Apply Report</title>
 <style>
-@import url('https://fonts.googleapis.com/css2?family=Syne:wght@700;900&family=DM+Sans:wght@400;500;600;700&display=swap');
-*{{box-sizing:border-box;margin:0;padding:0}}
-body{{font-family:'DM Sans',sans-serif;background:#f6f8fc;color:#1e2d45;padding:44px 52px;line-height:1.6;font-size:15px}}
-h1{{font-family:'Syne',sans-serif;font-size:2.6rem;font-weight:900;
-    background:linear-gradient(135deg,#1d4ed8,#0891b2);
-    -webkit-background-clip:text;-webkit-text-fill-color:transparent;margin-bottom:6px}}
-.sub{{color:#64748b;font-size:15px;margin-bottom:36px;font-weight:500}}
-.kpis{{display:grid;grid-template-columns:repeat(4,1fr);gap:18px;margin-bottom:30px}}
-.kpi{{background:#ffffff;border:1px solid #e4eaf3;border-radius:16px;padding:26px 22px;text-align:center;
-      box-shadow:0 2px 10px rgba(0,0,0,.05)}}
-.kpi .v{{font-family:'Syne',sans-serif;font-size:3rem;font-weight:900;color:#1e2d45;margin-bottom:6px;line-height:1}}
-.kpi .l{{color:#94a3b8;font-size:13px;text-transform:uppercase;letter-spacing:.8px;font-weight:700}}
-.section{{background:#ffffff;border:1px solid #e4eaf3;border-radius:16px;padding:28px 32px;
-          margin-bottom:24px;box-shadow:0 2px 10px rgba(0,0,0,.04)}}
-h2{{font-family:'Syne',sans-serif;font-size:1.05rem;font-weight:800;
-    color:#1e40af;text-transform:uppercase;letter-spacing:1px;margin-bottom:22px;
-    padding-bottom:12px;border-bottom:2px solid #dbeafe}}
-.cards-grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:14px;margin-bottom:24px}}
-table{{width:100%;border-collapse:collapse}}
-th{{text-align:left;padding:13px 18px;color:#94a3b8;font-size:12px;
-    text-transform:uppercase;letter-spacing:.7px;border-bottom:2px solid #f1f5f9;font-weight:700}}
-td{{padding:15px 18px;border-bottom:1px solid #f8fafc;font-size:15px;color:#334155;vertical-align:middle}}
-tr:hover td{{background:#fafbff}}
-.foot{{text-align:center;color:#cbd5e1;font-size:13px;margin-top:40px;padding-top:20px;border-top:1px solid #f1f5f9}}
-@media print{{body{{background:#fff;padding:20px}}.section,.kpi{{box-shadow:none}}}}
+body{{font-family:Arial,sans-serif;margin:40px;background:#f5f7fa}}
+h1{{color:#1e40af}}
+.stats{{display:grid;grid-template-columns:repeat(4,1fr);gap:20px;margin:20px 0}}
+.stat-box{{background:white;padding:20px;border-radius:10px;box-shadow:0 2px 4px rgba(0,0,0,0.1);text-align:center}}
+.stat-number{{font-size:32px;font-weight:bold;color:#1e40af}}
+.section{{background:white;padding:20px;border-radius:10px;margin:20px 0;box-shadow:0 2px 4px rgba(0,0,0,0.1)}}
+.cards{{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:15px;margin:20px 0}}
+.footer{{text-align:center;color:#64748b;margin-top:40px;padding-top:20px;border-top:1px solid #e2e8f0}}
 </style>
 </head>
 <body>
-<h1>APPLY</h1>
-<div class="sub">{subtitle} &nbsp;·&nbsp; {now}</div>
-<div class="kpis">
-  <div class="kpi"><div class="v">{total}</div><div class="l">Total Clients</div></div>
-  <div class="kpi"><div class="v" style="color:#15803d">{s['done']}</div>
-    <div class="l">Done &nbsp;<span style="color:#15803d;font-size:16px;font-weight:800">{conv}%</span></div></div>
-  <div class="kpi"><div class="v" style="color:#b45309">{s['recall']}</div><div class="l">Recall</div></div>
-  <div class="kpi"><div class="v" style="color:#b91c1c">{s['closed']}</div><div class="l">Closed</div></div>
+<h1>APPLY Sales Report</h1>
+<p>{subtitle} · {now}</p>
+<div class="stats">
+  <div class="stat-box"><div class="stat-number">{total}</div><div>Total Clients</div></div>
+  <div class="stat-box"><div class="stat-number">{s['done']}</div><div>Done ({conv}%)</div></div>
+  <div class="stat-box"><div class="stat-number">{s['recall']}</div><div>Recall</div></div>
+  <div class="stat-box"><div class="stat-number">{s['closed']}</div><div>Closed</div></div>
 </div>
 <div class="section">
   <h2>Feedback Breakdown</h2>
-  <div class="cards-grid">{fb_cards}</div>
-  {fb_bars}
+  <div class="cards">{fb_cards}</div>
 </div>
 <div class="section">
   <h2>Data Source</h2>
-  <div class="cards-grid">{ds_cards}</div>
+  <div class="cards">{ds_cards}</div>
 </div>
-{agent_section}
-<div class="foot">Apply Sales Management Portal &nbsp;·&nbsp; {now}</div>
+<div class="footer">Apply Sales Management Portal</div>
 </body>
 </html>"""
 
@@ -1755,11 +1625,11 @@ tr:hover td{{background:#fafbff}}
 #  ROUTING
 # ══════════════════════════════════════════════════════════════════════
 if st.session_state.role == "admin":
-    if   page == "Dashboard":       page_dashboard()
-    elif page == "All Data":        page_all_data()
-    elif page == "Upload Data":     page_upload()
-    elif page == "Users":           page_users()
-    elif page == "Monthly Report":  page_monthly_report()
+    if page == "Dashboard": page_dashboard()
+    elif page == "All Data": page_all_data()
+    elif page == "Upload Data": page_upload()
+    elif page == "Users": page_users()
+    elif page == "Monthly Report": page_monthly_report()
 else:
-    if   page == "My Dashboard": page_my_dashboard()
-    elif page == "My Clients":   page_my_clients()
+    if page == "My Dashboard": page_my_dashboard()
+    elif page == "My Clients": page_my_clients()
