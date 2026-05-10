@@ -32,6 +32,14 @@ from datetime import datetime, date
 from collections import Counter
 
 # ══════════════════════════════════════════════════════════════════════
+#  SESSION STATE FOR JSON UPLOAD (NEW)
+# ══════════════════════════════════════════════════════════════════════
+if "uploaded_json_data" not in st.session_state:
+    st.session_state.uploaded_json_data = None
+if "use_uploaded_json" not in st.session_state:
+    st.session_state.use_uploaded_json = False
+
+# ══════════════════════════════════════════════════════════════════════
 #  PATHS
 # ══════════════════════════════════════════════════════════════════════
 DATA_DIR   = "apply_data"
@@ -98,6 +106,190 @@ MONTHS_AR = {
     5:"مايو",  6:"يونيو",  7:"يوليو", 8:"أغسطس",
     9:"سبتمبر",10:"أكتوبر",11:"نوفمبر",12:"ديسمبر",
 }
+
+# ══════════════════════════════════════════════════════════════════════
+#  MODIFIED: LOAD RECORDS (supports uploaded JSON)
+# ══════════════════════════════════════════════════════════════════════
+def _load_records() -> list:
+    # First priority: use uploaded JSON file
+    if st.session_state.use_uploaded_json and st.session_state.uploaded_json_data is not None:
+        return st.session_state.uploaded_json_data
+    
+    # Second priority: load from local DATA_FILE
+    if os.path.exists(DATA_FILE):
+        with open(DATA_FILE, encoding="utf-8") as f:
+            return json.load(f)
+    return []
+
+def _save_records(recs: list):
+    # Don't save to file if we're using uploaded JSON
+    if st.session_state.use_uploaded_json:
+        st.warning("⚠️ You are in 'Uploaded JSON' mode. Changes are not saved to original file.")
+        # Update session data
+        st.session_state.uploaded_json_data = recs
+    else:
+        with open(DATA_FILE, "w", encoding="utf-8") as f:
+            json.dump(recs, f, ensure_ascii=False, indent=2)
+
+# ══════════════════════════════════════════════════════════════════════
+#  HELPERS
+# ══════════════════════════════════════════════════════════════════════
+def hash_pw(pw: str) -> str:
+    return hashlib.sha256(pw.encode()).hexdigest()
+
+def pct(a, b):
+    return round(a / b * 100) if b else 0
+
+def bar_html(val, total, color):
+    p = pct(val, total)
+    return (f'<div class="kpi-bar-wrap">'
+            f'<div class="kpi-bar" style="width:{p}%;background:{color}"></div></div>')
+
+def fb_badge(fb: str) -> str:
+    fb = str(fb).strip()
+    fg = FB_COLORS.get(fb, "#475569")
+    bg = FB_BG.get(fb, "#f1f5f9")
+    return f'<span class="badge" style="background:{bg};color:{fg};border:1px solid {fg}30">{fb}</span>'
+
+def ds_badge(ds: str) -> str:
+    ds = str(ds).strip()
+    fg = DS_COLORS.get(ds, "#475569")
+    bg = DS_BG.get(ds, "#f1f5f9")
+    return f'<span class="badge" style="background:{bg};color:{fg};border:1px solid {fg}30">{ds}</span>'
+
+def fix_mobile(x) -> str:
+    """Ensure mobile number is 11 digits with leading zero."""
+    if x is None or str(x).strip() in ("", "None", "nan"):
+        return ""
+    try:
+        n = str(int(float(str(x).strip())))
+        return n.zfill(11)
+    except Exception:
+        return str(x).strip()
+
+# ══════════════════════════════════════════════════════════════════════
+#  PERSISTENCE
+# ══════════════════════════════════════════════════════════════════════
+def _load_users() -> dict:
+    if os.path.exists(USERS_FILE):
+        with open(USERS_FILE, encoding="utf-8") as f:
+            return json.load(f)
+    default = {ADMIN_EMAIL: {"password": hash_pw(ADMIN_PASS),
+                              "role": "admin", "agent_code": None, "name": "Admin"}}
+    _save_users(default)
+    return default
+
+def _save_users(u: dict):
+    with open(USERS_FILE, "w", encoding="utf-8") as f:
+        json.dump(u, f, ensure_ascii=False, indent=2)
+
+def _migrate_feedback(records: list) -> int:
+    """Rename legacy feedback values in-place. Returns count changed."""
+    _map = {"Refused": "not interested", "child": "not interested"}
+    n = 0
+    for r in records:
+        fb = str(r.get("Feedback (Sales)","")).strip()
+        if fb in _map:
+            r["Feedback (Sales)"] = _map[fb]
+            n += 1
+    return n
+
+def _normalise_df(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy()
+    df.columns = [str(c).strip() for c in df.columns]
+    df = df.where(pd.notna(df), None)
+    MIGRATE = {"Refused": "not interested", "child": "not interested"}
+    for col, fn in [
+        ("Assign Data",          lambda x: str(x)[:10] if x else ""),
+        ("Agent Code",           lambda x: str(int(float(x))) if x is not None else ""),
+        ("Feedback (Sales)",     lambda x: MIGRATE.get(str(x).strip(), str(x).strip()) if x else ""),
+        ("Mobile",               fix_mobile),
+        ("Data Source Feedback", lambda x: str(x).strip() if x else ""),
+    ]:
+        if col in df.columns:
+            df[col] = df[col].apply(fn)
+    return df
+
+def _to_excel_bytes(records: list) -> bytes:
+    """Export to Excel keeping Mobile as text with leading zero."""
+    from openpyxl.styles import numbers as xl_numbers
+    df  = pd.DataFrame(records)
+    buf = io.BytesIO()
+    with pd.ExcelWriter(buf, engine="openpyxl") as w:
+        df.to_excel(w, index=False, sheet_name="Apply")
+        ws = w.sheets["Apply"]
+        # find Mobile column index (1-based in openpyxl)
+        headers = [ws.cell(1, c).value for c in range(1, ws.max_column+1)]
+        if "Mobile" in headers:
+            col_idx = headers.index("Mobile") + 1
+            for row in range(2, ws.max_row+1):
+                cell = ws.cell(row, col_idx)
+                val  = str(cell.value) if cell.value is not None else ""
+                if val and val not in ("None","nan",""):
+                    # pad to 11 digits
+                    try: val = str(int(float(val))).zfill(11)
+                    except Exception: pass
+                    cell.value          = val
+                    cell.number_format  = "@"   # force text format in Excel
+    return buf.getvalue()
+
+def _save_df(df: pd.DataFrame):
+    """Save last uploaded df, keeping Mobile as text."""
+    try:
+        from openpyxl import load_workbook
+        from openpyxl.styles import numbers as xl_numbers
+        df = df.copy()
+        if "Mobile" in df.columns:
+            df["Mobile"] = df["Mobile"].apply(
+                lambda x: str(int(float(str(x)))).zfill(11)
+                if str(x).strip() not in ("","None","nan") else "")
+        buf = io.BytesIO()
+        with pd.ExcelWriter(buf, engine="openpyxl") as w:
+            df.to_excel(w, index=False, sheet_name="Apply")
+            ws = w.sheets["Apply"]
+            headers = [ws.cell(1,c).value for c in range(1, ws.max_column+1)]
+            if "Mobile" in headers:
+                ci = headers.index("Mobile") + 1
+                for row in range(2, ws.max_row+1):
+                    ws.cell(row, ci).number_format = "@"
+        with open(LAST_DF, "wb") as f:
+            f.write(buf.getvalue())
+    except Exception:
+        pass
+
+# ══════════════════════════════════════════════════════════════════════
+#  AGENT ACCOUNTS
+# ══════════════════════════════════════════════════════════════════════
+def _auto_create_agents(records: list) -> list:
+    users = _load_users(); created = []
+    for r in records:
+        ac = str(r.get("Agent Code","")).strip()
+        if not ac: continue
+        email = f"agent{ac}@apply.com"
+        if email not in users:
+            users[email] = {"password": hash_pw(f"Apply{ac}"),
+                            "role": "sales", "agent_code": ac, "name": f"Agent {ac}"}
+            created.append(email)
+    if created: _save_users(users)
+    return created
+
+# ══════════════════════════════════════════════════════════════════════
+#  STATS
+# ══════════════════════════════════════════════════════════════════════
+def _get_stats(records: list) -> dict:
+    total  = len(records)
+    fb_cnt = Counter(str(r.get("Feedback (Sales)","")).strip() for r in records)
+    ds_cnt = Counter(str(r.get("Data Source Feedback","")).strip() for r in records)
+    return {
+        "total":  total,
+        "fb":     dict(fb_cnt),
+        "ds":     dict(ds_cnt),
+        "done":   fb_cnt.get("done", 0),
+        "recall": fb_cnt.get("recall", 0),
+        "closed": fb_cnt.get("closed", 0),
+        "ni":     fb_cnt.get("not interested", 0),
+        "na":     fb_cnt.get("N.A", 0),
+    }
 
 # ══════════════════════════════════════════════════════════════════════
 #  PAGE CONFIG + CSS
@@ -248,176 +440,6 @@ hr { border-color: #e4eaf3 !important; margin: 18px 0 !important; }
 """, unsafe_allow_html=True)
 
 # ══════════════════════════════════════════════════════════════════════
-#  HELPERS
-# ══════════════════════════════════════════════════════════════════════
-def hash_pw(pw: str) -> str:
-    return hashlib.sha256(pw.encode()).hexdigest()
-
-def pct(a, b):
-    return round(a / b * 100) if b else 0
-
-def bar_html(val, total, color):
-    p = pct(val, total)
-    return (f'<div class="kpi-bar-wrap">'
-            f'<div class="kpi-bar" style="width:{p}%;background:{color}"></div></div>')
-
-def fb_badge(fb: str) -> str:
-    fb = str(fb).strip()
-    fg = FB_COLORS.get(fb, "#475569")
-    bg = FB_BG.get(fb, "#f1f5f9")
-    return f'<span class="badge" style="background:{bg};color:{fg};border:1px solid {fg}30">{fb}</span>'
-
-def ds_badge(ds: str) -> str:
-    ds = str(ds).strip()
-    fg = DS_COLORS.get(ds, "#475569")
-    bg = DS_BG.get(ds, "#f1f5f9")
-    return f'<span class="badge" style="background:{bg};color:{fg};border:1px solid {fg}30">{ds}</span>'
-
-def fix_mobile(x) -> str:
-    """Ensure mobile number is 11 digits with leading zero."""
-    if x is None or str(x).strip() in ("", "None", "nan"):
-        return ""
-    try:
-        n = str(int(float(str(x).strip())))
-        return n.zfill(11)
-    except Exception:
-        return str(x).strip()
-
-# ══════════════════════════════════════════════════════════════════════
-#  PERSISTENCE
-# ══════════════════════════════════════════════════════════════════════
-def _load_users() -> dict:
-    if os.path.exists(USERS_FILE):
-        with open(USERS_FILE, encoding="utf-8") as f:
-            return json.load(f)
-    default = {ADMIN_EMAIL: {"password": hash_pw(ADMIN_PASS),
-                              "role": "admin", "agent_code": None, "name": "Admin"}}
-    _save_users(default)
-    return default
-
-def _save_users(u: dict):
-    with open(USERS_FILE, "w", encoding="utf-8") as f:
-        json.dump(u, f, ensure_ascii=False, indent=2)
-
-def _load_records() -> list:
-    if os.path.exists(DATA_FILE):
-        with open(DATA_FILE, encoding="utf-8") as f:
-            return json.load(f)
-    return []
-
-def _save_records(recs: list):
-    with open(DATA_FILE, "w", encoding="utf-8") as f:
-        json.dump(recs, f, ensure_ascii=False, indent=2)
-
-def _migrate_feedback(records: list) -> int:
-    """Rename legacy feedback values in-place. Returns count changed."""
-    _map = {"Refused": "not interested", "child": "not interested"}
-    n = 0
-    for r in records:
-        fb = str(r.get("Feedback (Sales)","")).strip()
-        if fb in _map:
-            r["Feedback (Sales)"] = _map[fb]
-            n += 1
-    return n
-
-def _normalise_df(df: pd.DataFrame) -> pd.DataFrame:
-    df = df.copy()
-    df.columns = [str(c).strip() for c in df.columns]
-    df = df.where(pd.notna(df), None)
-    MIGRATE = {"Refused": "not interested", "child": "not interested"}
-    for col, fn in [
-        ("Assign Data",          lambda x: str(x)[:10] if x else ""),
-        ("Agent Code",           lambda x: str(int(float(x))) if x is not None else ""),
-        ("Feedback (Sales)",     lambda x: MIGRATE.get(str(x).strip(), str(x).strip()) if x else ""),
-        ("Mobile",               fix_mobile),
-        ("Data Source Feedback", lambda x: str(x).strip() if x else ""),
-    ]:
-        if col in df.columns:
-            df[col] = df[col].apply(fn)
-    return df
-
-def _to_excel_bytes(records: list) -> bytes:
-    """Export to Excel keeping Mobile as text with leading zero."""
-    from openpyxl.styles import numbers as xl_numbers
-    df  = pd.DataFrame(records)
-    buf = io.BytesIO()
-    with pd.ExcelWriter(buf, engine="openpyxl") as w:
-        df.to_excel(w, index=False, sheet_name="Apply")
-        ws = w.sheets["Apply"]
-        # find Mobile column index (1-based in openpyxl)
-        headers = [ws.cell(1, c).value for c in range(1, ws.max_column+1)]
-        if "Mobile" in headers:
-            col_idx = headers.index("Mobile") + 1
-            for row in range(2, ws.max_row+1):
-                cell = ws.cell(row, col_idx)
-                val  = str(cell.value) if cell.value is not None else ""
-                if val and val not in ("None","nan",""):
-                    # pad to 11 digits
-                    try: val = str(int(float(val))).zfill(11)
-                    except Exception: pass
-                    cell.value          = val
-                    cell.number_format  = "@"   # force text format in Excel
-    return buf.getvalue()
-
-def _save_df(df: pd.DataFrame):
-    """Save last uploaded df, keeping Mobile as text."""
-    try:
-        from openpyxl import load_workbook
-        from openpyxl.styles import numbers as xl_numbers
-        df = df.copy()
-        if "Mobile" in df.columns:
-            df["Mobile"] = df["Mobile"].apply(
-                lambda x: str(int(float(str(x)))).zfill(11)
-                if str(x).strip() not in ("","None","nan") else "")
-        buf = io.BytesIO()
-        with pd.ExcelWriter(buf, engine="openpyxl") as w:
-            df.to_excel(w, index=False, sheet_name="Apply")
-            ws = w.sheets["Apply"]
-            headers = [ws.cell(1,c).value for c in range(1, ws.max_column+1)]
-            if "Mobile" in headers:
-                ci = headers.index("Mobile") + 1
-                for row in range(2, ws.max_row+1):
-                    ws.cell(row, ci).number_format = "@"
-        with open(LAST_DF, "wb") as f:
-            f.write(buf.getvalue())
-    except Exception:
-        pass
-
-# ══════════════════════════════════════════════════════════════════════
-#  AGENT ACCOUNTS
-# ══════════════════════════════════════════════════════════════════════
-def _auto_create_agents(records: list) -> list:
-    users = _load_users(); created = []
-    for r in records:
-        ac = str(r.get("Agent Code","")).strip()
-        if not ac: continue
-        email = f"agent{ac}@apply.com"
-        if email not in users:
-            users[email] = {"password": hash_pw(f"Apply{ac}"),
-                            "role": "sales", "agent_code": ac, "name": f"Agent {ac}"}
-            created.append(email)
-    if created: _save_users(users)
-    return created
-
-# ══════════════════════════════════════════════════════════════════════
-#  STATS
-# ══════════════════════════════════════════════════════════════════════
-def _get_stats(records: list) -> dict:
-    total  = len(records)
-    fb_cnt = Counter(str(r.get("Feedback (Sales)","")).strip() for r in records)
-    ds_cnt = Counter(str(r.get("Data Source Feedback","")).strip() for r in records)
-    return {
-        "total":  total,
-        "fb":     dict(fb_cnt),
-        "ds":     dict(ds_cnt),
-        "done":   fb_cnt.get("done", 0),
-        "recall": fb_cnt.get("recall", 0),
-        "closed": fb_cnt.get("closed", 0),
-        "ni":     fb_cnt.get("not interested", 0),
-        "na":     fb_cnt.get("N.A", 0),
-    }
-
-# ══════════════════════════════════════════════════════════════════════
 #  SESSION INIT
 # ══════════════════════════════════════════════════════════════════════
 for k, v in [("logged_in", False), ("role", None),
@@ -478,7 +500,7 @@ if not os.path.exists(DATA_FILE) and os.path.exists(EXCEL_SEED):
     _save_df(_seed)
 
 # ══════════════════════════════════════════════════════════════════════
-#  SIDEBAR
+#  SIDEBAR (MODIFIED with JSON upload)
 # ══════════════════════════════════════════════════════════════════════
 with st.sidebar:
     st.markdown(f"""
@@ -497,6 +519,40 @@ with st.sidebar:
          else f'👤 Agent · {st.session_state.agent_code}'}
       </div>
     </div>""", unsafe_allow_html=True)
+
+    # NEW: JSON Upload Section
+    st.markdown("---")
+    st.markdown("**📁 Load JSON Data**")
+    
+    # Show current mode
+    if st.session_state.use_uploaded_json:
+        st.success("✅ Using uploaded JSON")
+        if st.button("🔄 Switch to Local Data", use_container_width=True):
+            st.session_state.use_uploaded_json = False
+            st.session_state.uploaded_json_data = None
+            st.rerun()
+    else:
+        st.info("📄 Using local data from apply_data/")
+    
+    uploaded_json = st.file_uploader(
+        "Upload your JSON file",
+        type=["json"],
+        key="json_uploader",
+        label_visibility="collapsed"
+    )
+    
+    if uploaded_json is not None:
+        try:
+            data = json.load(uploaded_json)
+            if isinstance(data, list):
+                st.session_state.uploaded_json_data = data
+                st.session_state.use_uploaded_json = True
+                st.success(f"✅ Loaded {len(data)} records from JSON!")
+                st.rerun()
+            else:
+                st.error("JSON must contain an array of records")
+        except Exception as e:
+            st.error(f"Error reading JSON: {e}")
 
     pages = (["Dashboard", "All Data", "Upload Data", "Users", "Monthly Report"]
              if st.session_state.role == "admin"
@@ -647,7 +703,6 @@ def _dedup_records(records):
         seen[key if key else f"__nokey_{i}"] = i
     cleaned = [records[i] for i in sorted(seen.values())]
     return cleaned, len(records) - len(cleaned)
-
 
 def page_all_data():
     records = _load_records()
@@ -858,6 +913,7 @@ def page_all_data():
                                 f"→ Agent **{new_ac}**")
                             st.rerun()
 
+# ══════════════════════════════════════════════════════════════════════
 #  PAGE: UPLOAD DATA
 # ══════════════════════════════════════════════════════════════════════
 def page_upload():
@@ -1067,7 +1123,7 @@ def page_monthly_report():
       </div>
     </div>""", unsafe_allow_html=True)
 
-    # ── KPI metrics
+        # ── KPI metrics
     k1,k2,k3,k4,k5 = st.columns(5)
     k1.metric("Total",           s["total"])
     k2.metric("Done ✅",         s["done"],   f"{pct(s['done'],s['total'])}%")
@@ -1538,7 +1594,6 @@ def _build_excel_dashboard(records: list) -> bytes:
     return buf.getvalue()
 
 # ══════════════════════════════════════════════════════════════════════
-#  HTML REPORT# ══════════════════════════════════════════════════════════════════════
 #  HTML REPORT
 # ══════════════════════════════════════════════════════════════════════
 def _build_html_report(records: list, agent_label: str = None, title: str = None) -> str:
@@ -1624,8 +1679,10 @@ def _build_html_report(records: list, agent_label: str = None, title: str = None
         <div class="section">
           <h2>Agent Performance — Sorted by Done ↓</h2>
           <table>
-            <tr><th>Agent</th><th>Total</th><th>Done</th><th>Recall</th><th>Closed</th><th>Conv %</th></tr>
+            <thead><tr><th>Agent</th><th>Total</th><th>Done</th><th>Recall</th><th>Closed</th><th>Conv %</th></tr></thead>
+            <tbody>
             {rows}
+            </tbody>
           </table>
         </div>"""
 
