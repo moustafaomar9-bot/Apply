@@ -84,7 +84,7 @@ DS_NEEDS_EXTRA = {"recommendation", "Facebook", "Instagram", "other"}
 MONTHS_AR = {1:"يناير", 2:"فبراير", 3:"مارس", 4:"أبريل", 5:"مايو", 6:"يونيو", 7:"يوليو", 8:"أغسطس", 9:"سبتمبر", 10:"أكتوبر", 11:"نوفمبر", 12:"ديسمبر"}
 
 # ══════════════════════════════════════════════════════════════════════
-#  NORMALIZATION FUNCTIONS (NEW)
+#  NORMALIZATION FUNCTIONS
 # ══════════════════════════════════════════════════════════════════════
 
 def normalize_feedback(fb_value) -> str:
@@ -118,6 +118,26 @@ def normalize_datasource(ds_value) -> str:
         "other": "other", "oth": "other", "others": "other",
     }
     return ds_map.get(ds, ds)
+
+def extract_records_from_json(json_data):
+    """تستخرج الـ records من أي شكل JSON - تدعم {data: []} أو [] مباشرة"""
+    if isinstance(json_data, list):
+        return json_data
+    elif isinstance(json_data, dict):
+        # لو فيه مفتاح "data"
+        if "data" in json_data and isinstance(json_data["data"], list):
+            return json_data["data"]
+        # لو فيه مفتاح "records"
+        if "records" in json_data and isinstance(json_data["records"], list):
+            return json_data["records"]
+        # لو فيه مفتاح "results"
+        if "results" in json_data and isinstance(json_data["results"], list):
+            return json_data["results"]
+        # لو المفاتيح أرقام (زي 1, 2, 3)
+        first_key = next(iter(json_data.keys())) if json_data else None
+        if first_key and str(first_key).lstrip('-').isdigit():
+            return list(json_data.values())
+    return None
 
 # ══════════════════════════════════════════════════════════════════════
 #  LOAD RECORDS (supports uploaded JSON)
@@ -312,40 +332,38 @@ h1 { color: #1e40af !important; font-family: 'Syne', sans-serif !important; font
 h2 { color: #1e40af !important; font-family: 'Syne', sans-serif !important; font-weight: 800 !important; }
 h3 { color: #2563eb !important; font-weight: 700 !important; }
 .stTextInput input, .stTextArea textarea, .stNumberInput input { background: #ffffff !important; border: 1.5px solid #d0dae8 !important; border-radius: 10px !important; color: #1e2d45 !important; font-size: 14px !important; }
-.stTextInput input:focus, .stTextArea textarea:focus { border-color: #3b82f6 !important; box-shadow: 0 0 0 3px rgba(59,130,246,.12) !important; }
-div[data-baseweb="select"] > div { background: #ffffff !important; border: 1.5px solid #d0dae8 !important; border-radius: 10px !important; color: #1e2d45 !important; font-size: 14px !important; }
-.stButton > button, [data-testid="stFormSubmitButton"] > button { background: linear-gradient(135deg, #1d4ed8, #2563eb) !important; color: #fff !important; border: none !important; border-radius: 10px !important; font-weight: 700 !important; font-size: 14px !important; box-shadow: 0 2px 8px rgba(37,99,235,.25) !important; }
+.stButton > button, [data-testid="stFormSubmitButton"] > button { background: linear-gradient(135deg, #1d4ed8, #2563eb) !important; color: #fff !important; border: none !important; border-radius: 10px !important; font-weight: 700 !important; font-size: 14px !important; }
 .stDownloadButton > button { background: linear-gradient(135deg, #065f46, #059669) !important; color: #fff !important; border: none !important; border-radius: 10px !important; font-weight: 700 !important; font-size: 14px !important; }
 .stTabs [data-baseweb="tab-list"] { background: #eaf0f8 !important; border-radius: 12px; padding: 4px; gap: 4px; border: none !important; }
 .stTabs [data-baseweb="tab"] { color: #64748b !important; font-weight: 600; border-radius: 9px; font-size: 14px !important; }
-.stTabs [aria-selected="true"] { background: #ffffff !important; color: #1d4ed8 !important; box-shadow: 0 2px 8px rgba(0,0,0,.08) !important; font-weight: 700 !important; }
-.ap-hero { background: linear-gradient(135deg, #ffffff 0%, #f0f5ff 100%); border: 1px solid #dbeafe; border-radius: 18px; padding: 26px 30px; margin-bottom: 22px; box-shadow: 0 2px 14px rgba(37,99,235,.07); }
+.stTabs [aria-selected="true"] { background: #ffffff !important; color: #1d4ed8 !important; font-weight: 700 !important; }
+.ap-hero { background: linear-gradient(135deg, #ffffff 0%, #f0f5ff 100%); border: 1px solid #dbeafe; border-radius: 18px; padding: 26px 30px; margin-bottom: 22px; }
 .ap-hero-title { font-family: 'Syne', sans-serif; font-size: 1.6rem; font-weight: 900; color: #1e2d45; }
 .ap-hero-sub { color: #64748b; font-size: 14px; margin-top: 5px; }
 .m-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: 10px; margin-top: 16px; }
 .m-card { background: #f8fafc; border: 1px solid #e4eaf3; border-radius: 12px; padding: 14px 8px; text-align: center; }
-.m-num { font-family: 'Syne', sans-serif; font-size: 2rem; font-weight: 900; line-height: 1; }
-.m-lbl { font-size: 11px; color: #94a3b8; margin-top: 6px; text-transform: uppercase; letter-spacing: .5px; }
+.m-num { font-family: 'Syne', sans-serif; font-size: 2rem; font-weight: 900; }
+.m-lbl { font-size: 11px; color: #94a3b8; margin-top: 6px; text-transform: uppercase; }
 .kpi-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 14px; margin: 14px 0; }
-.kpi-card { background: #ffffff; border: 1px solid #e4eaf3; border-radius: 14px; padding: 20px 22px; box-shadow: 0 1px 6px rgba(0,0,0,.05); }
-.kpi-ttl { font-size: 11px; color: #94a3b8; font-weight: 700; margin-bottom: 8px; text-transform: uppercase; letter-spacing: .8px; }
-.kpi-val { font-family: 'Syne', sans-serif; font-size: 2.4rem; font-weight: 900; line-height: 1.1; }
+.kpi-card { background: #ffffff; border: 1px solid #e4eaf3; border-radius: 14px; padding: 20px 22px; }
+.kpi-ttl { font-size: 11px; color: #94a3b8; font-weight: 700; margin-bottom: 8px; text-transform: uppercase; }
+.kpi-val { font-family: 'Syne', sans-serif; font-size: 2.4rem; font-weight: 900; }
 .kpi-sub { font-size: 14px; color: #64748b; margin-top: 6px; }
 .kpi-bar-wrap { background: #f1f5f9; border-radius: 5px; height: 7px; margin-top: 10px; overflow: hidden; }
 .kpi-bar { height: 7px; border-radius: 5px; }
 .sec-title { font-family: 'Syne', sans-serif; font-size: 1.05rem; font-weight: 800; color: #1e40af; border-bottom: 2px solid #dbeafe; padding-bottom: 9px; margin: 24px 0 16px; }
-.client-card { background: #ffffff; border: 1px solid #e4eaf3; border-radius: 12px; padding: 15px 20px; margin-bottom: 9px; box-shadow: 0 1px 4px rgba(0,0,0,.04); }
+.client-card { background: #ffffff; border: 1px solid #e4eaf3; border-radius: 12px; padding: 15px 20px; margin-bottom: 9px; }
 .c-name { font-size: 15px; font-weight: 700; color: #1e2d45; }
 .c-meta { font-size: 13px; color: #94a3b8; margin-top: 5px; }
 .badge { display: inline-block; border-radius: 6px; padding: 3px 11px; font-size: 12px; font-weight: 700; margin-right: 4px; }
-.info-box { background: #eff6ff; border: 1px solid #bfdbfe; border-left: 3px solid #3b82f6; border-radius: 10px; padding: 14px 18px; margin-bottom: 14px; font-size: 14px; color: #1e40af; line-height: 1.8; }
+.info-box { background: #eff6ff; border: 1px solid #bfdbfe; border-left: 3px solid #3b82f6; border-radius: 10px; padding: 14px 18px; margin-bottom: 14px; font-size: 14px; color: #1e40af; }
 .stat-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(135px, 1fr)); gap: 12px; margin: 14px 0; }
-.stat-card { background: #ffffff; border: 1px solid #e4eaf3; border-radius: 12px; padding: 18px 12px; text-align: center; box-shadow: 0 1px 4px rgba(0,0,0,.04); }
-.stat-num { font-family: 'Syne', sans-serif; font-size: 2rem; font-weight: 900; line-height: 1; }
-.stat-lbl { font-size: 11px; color: #64748b; margin-top: 6px; text-transform: uppercase; letter-spacing: .5px; font-weight: 600; }
+.stat-card { background: #ffffff; border: 1px solid #e4eaf3; border-radius: 12px; padding: 18px 12px; text-align: center; }
+.stat-num { font-family: 'Syne', sans-serif; font-size: 2rem; font-weight: 900; }
+.stat-lbl { font-size: 11px; color: #64748b; margin-top: 6px; text-transform: uppercase; }
 .extra-box { background: #f0f7ff; border: 1.5px solid #bfdbfe; border-radius: 10px; padding: 12px 16px; margin-top: 8px; }
 .login-wrap { max-width: 420px; margin: 50px auto; }
-.login-box { background: #ffffff; border: 1px solid #e4eaf3; border-radius: 20px; padding: 38px 34px; box-shadow: 0 4px 24px rgba(0,0,0,.08); }
+.login-box { background: #ffffff; border: 1px solid #e4eaf3; border-radius: 20px; padding: 38px 34px; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -443,10 +461,10 @@ with st.sidebar:
                 if os.path.exists(DATA_FILE):
                     with open(DATA_FILE, encoding="utf-8") as f:
                         local_data = json.load(f)
-                existing_mobiles = {str(r.get("Mobile","")).strip().lstrip("0") for r in local_data}
+                existing_mobiles = {str(r.get("Mobile", "")).strip().lstrip("0") for r in local_data}
                 new_records = []
                 for r in st.session_state.uploaded_json_data:
-                    mob_key = str(r.get("Mobile","")).strip().lstrip("0")
+                    mob_key = str(r.get("Mobile", "")).strip().lstrip("0")
                     if mob_key and mob_key not in existing_mobiles:
                         new_records.append(r)
                         existing_mobiles.add(mob_key)
@@ -472,13 +490,15 @@ with st.sidebar:
         if uploaded_json is not None:
             try:
                 data = json.load(uploaded_json)
-                if isinstance(data, list):
-                    st.session_state.uploaded_json_data = data
+                records = extract_records_from_json(data)
+                if records is not None and isinstance(records, list):
+                    st.session_state.uploaded_json_data = records
                     st.session_state.use_uploaded_json = True
-                    st.success(f"✅ Loaded {len(data)} records from JSON! (Temporary mode)")
+                    st.success(f"✅ Loaded {len(records)} records from JSON! (Temporary mode)")
                     st.rerun()
                 else:
-                    st.error("JSON must contain an array of records")
+                    st.error("JSON must contain an array of records or an object with 'data' key")
+                    st.info("المتوقع: قائمة [] أو كائن يحتوي على مفتاح 'data' أو 'records'")
             except Exception as e:
                 st.error(f"Error reading JSON: {e}")
 
@@ -628,7 +648,6 @@ def page_all_data():
     agents = ["All"] + sorted(_ac_list, key=lambda x: _ac_done.get(x, 0), reverse=True)
     tab_view, tab_delete, tab_transfer = st.tabs(["📋  View & Filter", "🗑️  Delete Records", "🔀  Transfer Record"])
     
-    # ── VIEW ──────────────────────────────────────────────────────────
     with tab_view:
         f1, f2, f3 = st.columns(3)
         with f1: sel_a = st.selectbox("Agent", agents, key="va")
@@ -652,7 +671,6 @@ def page_all_data():
             st.info("No records match.")
         st.download_button("⬇️ Download Filtered Excel", data=_to_excel_bytes(flt), file_name=f"apply_{datetime.now():%Y%m%d_%H%M}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
     
-    # ── DELETE ────────────────────────────────────────────────────────
     with tab_delete:
         st.markdown('<div class="info-box" style="border-left-color:#b91c1c;background:#fef2f2;color:#7f1d1d">☑️ تحديد الريكوردات من الجدول، بعدين اضغط Delete.</div>', unsafe_allow_html=True)
         dc1, dc2, dc3 = st.columns(3)
@@ -696,7 +714,6 @@ def page_all_data():
                     st.success(f"✅ Deleted {before - len(all_recs)} record(s).")
                     st.rerun()
     
-    # ── TRANSFER ──────────────────────────────────────────────────────
     with tab_transfer:
         st.markdown('<div class="info-box"><b>🔀 Transfer client between agents</b><br>ابحث، اختار، حوله للـ Agent الجديد.</div>', unsafe_allow_html=True)
         tr_srch = st.text_input("🔍 Search client", placeholder="01XXXXXXXXX", key="tr_s")
