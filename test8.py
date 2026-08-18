@@ -464,7 +464,7 @@ with st.sidebar:
         st.info("📄 Using local data from apply_data/")
         if os.path.exists(DATA_FILE):
             with open(DATA_FILE, encoding="utf-8") as f:
-                local_count = len(json.load(f))
+                local_count = len(_load_records())
             st.caption(f"Local records: {local_count}")
         uploaded_json = st.file_uploader("Upload JSON file to view temporarily", type=["json"], key="json_uploader", label_visibility="collapsed")
         if uploaded_json is not None:
