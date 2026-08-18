@@ -199,9 +199,13 @@ def fix_mobile(x) -> str:
 #  USERS PERSISTENCE
 # ══════════════════════════════════════════════════════════════════════
 def _load_users() -> dict:
-    if os.path.exists(USERS_FILE):
-        with open(USERS_FILE, encoding="utf-8") as f:
-            return json.load(f)
+    if os.path.exists(USERS_FILE) and os.path.getsize(USERS_FILE) > 0:
+        try:
+            with open(USERS_FILE, encoding="utf-8") as f:
+                return json.load(f)
+        except json.JSONDecodeError:
+            pass
+            
     default = {ADMIN_EMAIL: {"password": hash_pw(ADMIN_PASS), "role": "admin", "agent_code": None, "name": "Admin"}}
     _save_users(default)
     return default
