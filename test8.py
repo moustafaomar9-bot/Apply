@@ -488,7 +488,7 @@ with st.sidebar:
             st.session_state.use_uploaded_json = False
             st.session_state.uploaded_json_data = None
             st.rerun()
-  else:
+   else:
         st.info("📄 Using local data from apply_data/")
         local_count = len(_load_records())
         st.caption(f"Local records: {local_count}")
