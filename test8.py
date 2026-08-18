@@ -488,11 +488,11 @@ with st.sidebar:
             st.session_state.use_uploaded_json = False
             st.session_state.uploaded_json_data = None
             st.rerun()
-   else:
+    else:
         st.info("📄 Using local data from apply_data/")
         local_count = len(_load_records())
         st.caption(f"Local records: {local_count}")
-        uploaded_json = st.file_uploader("Upload JSON file to view temporarily", type=["json"], key="json_uploader", label_visibility="collapsed")        if uploaded_json is not None:
+        uploaded_json = st.file_uploader("Upload JSON file to view temporarily", type=["json"], key="json_uploader", label_visibility="collapsed")
             try:
                 data = json.load(uploaded_json)
                 records = extract_records_from_json(data)
