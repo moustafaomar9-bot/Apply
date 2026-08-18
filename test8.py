@@ -1177,16 +1177,3 @@ def page_dashboard():
     _render_ds_cards(records)
 
     st.markdown('<div class="sec-title">KPI Bars</div>', unsafe_allow_html=True)
-
-    st.markdown(f"""
-
-    <div class="kpi-grid">
-
-      <div class="kpi-card"><div class="kpi-ttl">Done Rate</div><div class="kpi-val" style="color:#15803d">{pct(s['done'], s['total'])}%</div><div class="kpi-sub">{s['done']} of {s['total']}</div>{bar_html(s['done'], s['total'], '#15803d')}</div>
-
-      <div class="kpi-card"><div class="kpi-ttl">Recall Rate</div><div class="kpi-val" style="color:#b45309">{pct(s['recall'], s['total'])}%</div><div class="kpi-sub">{s['recall']} clients</div>{bar_html(s['recall'], s['total'], '#b45309')}</div>
-
-      <div class="kpi-card"><div class="kpi-ttl">Closed Rate</div><div class="kpi-val" style="color:#b91c1c">{pct(s['closed'], s['total'])}%</div><div class="kpi-sub">{s['closed']} clients</div>{bar_html(s['closed'], s['total'], '#b91c1c')}</div>
-
-      <div class="kpi-card"><div class="kpi-ttl">Not Interested</div><div class="kpi-val" style="co 
-
