@@ -89,7 +89,7 @@ MONTHS_AR = {1:"يناير", 2:"فبراير", 3:"مارس", 4:"أبريل", 5:"
 
 def normalize_feedback(fb_value) -> str:
     if not fb_value or str(fb_value).strip() in ("", "None", "nan"):
-    return ""
+        return ""
 fb = str(fb_value).strip().lower()
 fb_map = {
     "done": "done", "dona": "done", "don": "done", "dn": "done", "dne": "done", "do": "done",
@@ -108,7 +108,7 @@ return fb_map.get(fb, fb)
 
 def normalize_datasource(ds_value) -> str:
     if not ds_value or str(ds_value).strip() in ("", "None", "nan"):
-    return ""
+        return ""
 ds = str(ds_value).strip().lower()
 ds_map = {
     "old member": "old member", "oldmember": "old member", "old": "old member", "old mem": "old member",
