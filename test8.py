@@ -39,9 +39,9 @@ from collections import Counter
 #  SESSION STATE FOR JSON UPLOAD
 # ══════════════════════════════════════════════════════════════════════
 if "uploaded_json_data" not in st.session_state:
-st.session_state.uploaded_json_data = None
+    st.session_state.uploaded_json_data = None
 if "use_uploaded_json" not in st.session_state:
-st.session_state.use_uploaded_json = False
+    st.session_state.use_uploaded_json = False
 
 # ══════════════════════════════════════════════════════════════════════
 #  PATHS
