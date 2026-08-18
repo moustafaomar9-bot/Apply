@@ -145,11 +145,15 @@ def extract_records_from_json(json_data):
 def _load_records() -> list:
     if st.session_state.use_uploaded_json and st.session_state.uploaded_json_data is not None:
         return st.session_state.uploaded_json_data
-    if os.path.exists(DATA_FILE):
-        with open(DATA_FILE, encoding="utf-8") as f:
-            return json.load(f)
+    
+    # التأكد من وجود الملف وأن حجمه أكبر من صفر
+    if os.path.exists(DATA_FILE) and os.path.getsize(DATA_FILE) > 0:
+        try:
+            with open(DATA_FILE, encoding="utf-8") as f:
+                return json.load(f)
+        except json.JSONDecodeError:
+            return [] # في حال كان الملف تالفاً
     return []
-
 def _save_records(recs: list):
     if st.session_state.use_uploaded_json:
         st.session_state.uploaded_json_data = recs
