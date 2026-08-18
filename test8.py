@@ -300,9 +300,12 @@ def _save_users(u: dict):
         json.dump(u, f, ensure_ascii=False, indent=2)
 
 def _load_records() -> list:
-    if os.path.exists(DATA_FILE):
-        with open(DATA_FILE, encoding="utf-8") as f:
-            return json.load(f)
+    if os.path.exists(DATA_FILE) and os.path.getsize(DATA_FILE) > 0:
+        try:
+            with open(DATA_FILE, encoding="utf-8") as f:
+                return json.load(f)
+        except json.JSONDecodeError:
+            return []
     return []
 
 def _save_records(recs: list):
