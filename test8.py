@@ -438,9 +438,7 @@ with st.sidebar:
         with col2:
             if st.button("🔗 Merge to Local", use_container_width=True):
                 local_data = []
-                if os.path.exists(DATA_FILE):
-                    with open(DATA_FILE, encoding="utf-8") as f:
-                        local_data = json.load(f)
+                local_data = _load_records()
                 existing_mobiles = {str(r.get("Mobile", "")).strip().lstrip("0") for r in local_data}
                 new_records = []
                 for r in st.session_state.uploaded_json_data:
